@@ -64,31 +64,101 @@ fi
 print_status "Setting permissions..."
 find "$GCC_ROOT/bin" -type f -exec chmod +x {} \; 2>/dev/null || true
 
+# Detect GCC version directory
+GCC_VERSION_DIR=$(find "$GCC_ROOT/lib/gcc" -name "x86_64-*-linux" -type d | head -n1)
+if [ -n "$GCC_VERSION_DIR" ]; then
+    GCC_LIB_DIR="$GCC_VERSION_DIR/$(ls "$GCC_VERSION_DIR" | head -n1)"
+    print_status "Found GCC lib directory: $GCC_LIB_DIR"
+else
+    print_warning "Could not detect GCC lib directory, using default"
+    GCC_LIB_DIR="$GCC_ROOT/lib/gcc/x86_64-redhat-linux/11"
+fi
+
 # Create activation script
 print_status "Creating activation script..."
-cat > "$GCC_ROOT/activate-gcc.sh" << 'EOD'
+cat > "$GCC_ROOT/activate-gcc.sh" << EOD
 #!/bin/bash
 
 # GCC Environment Activation Script
-GCC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GCC_ROOT="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 
-export PATH="$GCC_ROOT/bin:$PATH"
-export LD_LIBRARY_PATH="$GCC_ROOT/lib64:$GCC_ROOT/lib:$LD_LIBRARY_PATH"
-export LIBRARY_PATH="$GCC_ROOT/lib64:$GCC_ROOT/lib:$LIBRARY_PATH"
-export C_INCLUDE_PATH="$GCC_ROOT/include:$C_INCLUDE_PATH"
-export CPLUS_INCLUDE_PATH="$GCC_ROOT/include:$CPLUS_INCLUDE_PATH"
+# Detect GCC lib directory dynamically
+GCC_LIB_DIR=\$(find "\$GCC_ROOT/lib/gcc" -name "x86_64-*-linux" -type d | head -n1)
+if [ -n "\$GCC_LIB_DIR" ]; then
+    GCC_LIB_DIR="\$GCC_LIB_DIR/\$(ls "\$GCC_LIB_DIR" | head -n1)"
+fi
 
-export CC="$GCC_ROOT/bin/gcc"
-export CXX="$GCC_ROOT/bin/g++"
+# Set environment variables
+export GCC_HOME="\$GCC_ROOT"
+export PATH="\$GCC_ROOT/bin:\$PATH"
 
-echo "GCC environment activated!"
-echo "GCC: $(gcc --version 2>/dev/null | head -1 || echo 'gcc not found')"
+# Set LD_LIBRARY_PATH with all necessary paths
+export LD_LIBRARY_PATH="\$GCC_ROOT/lib64:\$GCC_ROOT/lib:\$GCC_LIB_DIR:\$LD_LIBRARY_PATH"
+
+# Other library and include paths
+export LIBRARY_PATH="\$GCC_ROOT/lib64:\$GCC_ROOT/lib:\$GCC_LIB_DIR:\$LIBRARY_PATH"
+export C_INCLUDE_PATH="\$GCC_ROOT/include:\$C_INCLUDE_PATH"
+export CPLUS_INCLUDE_PATH="\$GCC_ROOT/include:\$CPLUS_INCLUDE_PATH"
+
+# Set compiler variables
+export CC="\$GCC_ROOT/bin/gcc"
+export CXX="\$GCC_ROOT/bin/g++"
+
+# Remove empty entries from paths
+export LD_LIBRARY_PATH=\$(echo "\$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v '^$' | tr '\n' ':' | sed 's/:$//')
+export LIBRARY_PATH=\$(echo "\$LIBRARY_PATH" | tr ':' '\n' | grep -v '^$' | tr '\n' ':' | sed 's/:$//')
+
+echo "=== GCC Environment Activated ==="
+echo "GCC Version: \$(gcc --version 2>/dev/null | head -1 || echo 'gcc not found')"
+echo "GCC Home: \$GCC_HOME"
+echo "LD_LIBRARY_PATH includes:"
+echo "\$LD_LIBRARY_PATH" | tr ':' '\n' | grep gcc
+
+# Quick verification
+if [ -f "\$GCC_ROOT/bin/as" ]; then
+    echo "✓ Assembler (as) found"
+    # Check assembler dependencies
+    if ldd "\$GCC_ROOT/bin/as" 2>/dev/null | grep -q "not found"; then
+        echo "⚠ Warning: Assembler has missing dependencies"
+        ldd "\$GCC_ROOT/bin/as" | grep "not found"
+    fi
+fi
 EOD
 
 chmod +x "$GCC_ROOT/activate-gcc.sh"
 
-# Create convenience activation script in repo root
-cp "$GCC_ROOT/activate-gcc.sh" "$SCRIPT_DIR/"
+# Create convenience activation script in repo root  
+cat > "$SCRIPT_DIR/activate-gcc.sh" << 'EOS'
+#!/bin/bash
+
+# Quick activation script
+if [ -f "$HOME/.local/gcc/activate-gcc.sh" ]; then
+    source "$HOME/.local/gcc/activate-gcc.sh"
+else
+    echo "GCC not installed. Run ./install-gcc.sh first"
+    exit 1
+fi
+EOS
+
+chmod +x "$SCRIPT_DIR/activate-gcc.sh"
+
+# Verify installation
+print_status "Verifying installation..."
+cd "$GCC_ROOT"
+
+# Check binaries
+if [ -f "bin/gcc" ] && [ -f "bin/as" ]; then
+    print_success "Core binaries installed"
+else
+    print_error "Missing core binaries!"
+fi
+
+# Check libraries
+if ls lib64/*opcodes* 2>/dev/null || ls lib/gcc/*/libopcodes* 2>/dev/null; then
+    print_success "Binutils libraries found"
+else
+    print_warning "Binutils libraries might be missing"
+fi
 
 print_success "Installation completed!"
 echo
@@ -100,3 +170,6 @@ echo "To compile examples:"
 echo "  source activate-gcc.sh"
 echo "  gcc examples/hello.c -o hello"
 echo "  ./hello"
+echo
+echo "If you get library errors, you may need to rebuild the archive"
+echo "using the updated create script that includes all binutils libraries."
